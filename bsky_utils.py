@@ -417,9 +417,10 @@ def get_follows(did, service_endpoint):
     api = f"{service_endpoint}/xrpc/com.atproto.repo.listRecords"
     params = {
         "repo": did,
+        "limit": 100,
         "collection": "app.bsky.graph.follow",
     }
-    return generic_page_loop(api, 100, ['records'], ['cursor'], **params)
+    return list(generic_page_loop(api, params, ['records'], ['cursor']))
 
 # BLOB
 
@@ -434,9 +435,7 @@ def upload_blob(session, service_endpoint, blob_location):
 
     if len(blob_bytes) > 1000000:
         raise Exception(
-            f"{blob_type} file size too large. 1000000 bytes maximum, got: {
-                len(blob_bytes)}"
-        )
+            f"{blob_type} file size too large. 1000000 bytes maximum, got: {len(blob_bytes)}")
     safe_request('post',
                  f"{service_endpoint}/xrpc/com.atproto.repo.uploadBlob",
                  headers={
@@ -598,10 +597,12 @@ def create_post(session, service_endpoint, text="", parent_url=None, blob_path=N
         "record": post,
     })
 
+    token = session.get('accessJwt')
+
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
 
     data = safe_request('post', url, headers=headers, data=payload)
@@ -632,12 +633,13 @@ def create_post_prompt(username=None, password=None, text=None, parent_url=None,
 
 def delete_record(session, service_endpoint, collection, rkey, view_json=True):
     # collection // nsid
+    token = session.get('accessJwt')
     did = session.get('did')
     api = f"{service_endpoint}/xrpc/com.atproto.repo.deleteRecord"
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
     payload = json.dumps({
         "repo": did,
@@ -656,10 +658,11 @@ def delete_post(session, service_endpoint, url, view_json=True):
     did, _, rkey = decompose_url(url)
 
     api = f"{service_endpoint}/xrpc/com.atproto.repo.deleteRecord"
+    token = session.get('accessJwt')
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
     payload = json.dumps({
         "repo": did,
@@ -693,11 +696,12 @@ def replace_post(session, service_endpoint, url, text, view_json=True):
         "rkey": rkey,
         "record": record,
     })
+    token = session.get('accessJwt')
 
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
     response = safe_request('post', api, headers=headers, data=payload)
 
@@ -720,6 +724,24 @@ def replace_post_prompt(username=None, password=None, url=None, text=None):
 
 # LISTS
 
+def get_list_items(list_uri, limit=100):
+    params = {
+        'list': list_uri,
+        'limit': limit,
+    }
+    #TODO: endpoint? i don't think it adds anything
+    api = 'https://public.api.bsky.app/xrpc/app.bsky.graph.getList'
+    return list(generic_page_loop(api, params, ['items'], ['cursor']))
+    
+
+def get_list(list_uri):
+    params = {
+        'list': list_uri,
+        'limit': 5,
+    }
+    api = 'https://public.api.bsky.app/xrpc/app.bsky.graph.getList'
+    return safe_request('get', api, params=params)
+    # return list(generic_page_loop(api, params, ['items'], ['cursor']))
 
 def get_lists(actor, limit=50, cursor=None):
     """
@@ -739,7 +761,7 @@ def get_lists(actor, limit=50, cursor=None):
         'limit': limit,
         'cursor': cursor,
     }
-    safe_request(
+    return safe_request(
         'get', 'https://public.api.bsky.app/xrpc/app.bsky.graph.getLists', params=params)
 
 
@@ -753,11 +775,12 @@ def get_list_record(session, service_endpoint, selected_list):
         "collection": collection,  # "app.bsky.graph.list",
         "rkey": rkey,
     }
+    token = session.get('accessJwt')
 
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
 
     data = safe_request('get', url, headers=headers, params=params)
@@ -779,7 +802,7 @@ def create_list(session, service_endpoint, name="", description="", created_at="
     if description == "":
         description = input("Enter new list description: ")
     if created_at == "":
-        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        created_at = str(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 
     payload = json.dumps({
         "repo": did,
@@ -792,16 +815,17 @@ def create_list(session, service_endpoint, name="", description="", created_at="
             "createdAt": created_at
         }
     })
+    token = session.get('accessJwt')
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
     _, _, rkey = decompose_uri(
         (safe_request('post', url, headers=headers, data=payload) or {}).get('uri'))
     if rkey:
-        print(f"List successfully created: https://bsky.app/profile/{
-              session.get('handle') or did}/lists/{rkey}")
+        print(f"List successfully created: https://bsky.app/profile/{session.get('handle') or did}/lists/{rkey}")
+    return f"at://{did}/app.bsky.graph.list/{rkey}"
 
 
 def update_list_metadata(session, service_endpoint, selected_list, name=None, description=None):
@@ -826,10 +850,11 @@ def update_list_metadata(session, service_endpoint, selected_list, name=None, de
         "record": record,
     })
 
+    token = session.get('accessJwt')
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
 
     data = safe_request('post', url, headers=headers, data=payload)
@@ -841,6 +866,7 @@ def cli_display_lists(lists, actor=""):
     print(f"Lists for actor '{actor}':" if actor else "Lists:")
     print(f"\n\t#\tName\t\tItem Count")
     for idx, item in enumerate(lists):
+        # print(item)
         name = item.get("name", "")
         item_count = item.get("listItemCount", 0)
         print(f"\t{idx + 1}: \t{name}\t\t{item_count}")
@@ -851,8 +877,10 @@ def cli_select_list(lists, actor=""):
     cli_display_lists(lists, actor)
     sel = int(input("Select a list: "))
     selected_list = lists[sel - 1]
-    print(f"List Selected: {selected_list["name"]}")
-    print(f"Description: {selected_list["description"]}")
+    name = selected_list["name"]
+    desc = selected_list["description"]
+    print(f"List Selected: {name}")
+    print(f"Description: {desc}")
     return selected_list
 
 
@@ -864,7 +892,14 @@ def cli_list_menu(actor):
         Returns:
             selected_list (str)
     """
-    return cli_select_list(get_lists(resolve_handle(actor)), actor)
+    # return cli_select_list(get_lists(resolve_handle(actor)), actor)
+    did = resolve_handle(actor)
+    lists = get_lists(did).get('lists')
+    if not lists:
+        print('no lists meow')
+        return
+    # print(lists)
+    return cli_select_list(lists, did)
 
 
 def delete_list(session, service_endpoint, selected_list):
@@ -879,10 +914,12 @@ def delete_list(session, service_endpoint, selected_list):
         "rkey": rkey,
     })
 
+    token = session.get('accessJwt')
+
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
 
     safe_request('post', url, headers=headers, data=payload)
@@ -906,14 +943,17 @@ def add_user_to_list(session, service_endpoint, selected_list, user_did):
         }
     })
 
+    token = session.get('accessJwt')
+
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': f'Bearer {session.get('accessJwt')}'
+        'Authorization': f'Bearer {token}'
     }
 
     response = safe_request('post', url, headers=headers, data=payload)
-    print(f"{user_did} successfully added to list '{selected_list["name"]}'")
+    name = selected_list["name"]
+    print(f"{user_did} successfully added to list '{name}'")
 
 
 def add_follows_to_list(session, timestamp=True):
@@ -927,10 +967,12 @@ def add_follows_to_list(session, timestamp=True):
         add_user_to_list(session, service_endpoint,
                          selected_list, follower['value']['subject'])
 
+    last_update = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
     if timestamp:
         update_list_metadata(
             session, service_endpoint, selected_list, name=selected_list['name'],
-            description=f"Last updated {datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}")
+            description=f"Last updated {last_update}")
     print()
     _, _, rkey = decompose_uri(selected_list['uri'])
     print(
@@ -939,6 +981,20 @@ def add_follows_to_list(session, timestamp=True):
 ## ========== ##
 ## UNFINISHED ##
 ## ========== ##
+
+def get_follows_since(did, service_endpoint, timestamp):
+    follows = get_follows(did, service_endpoint)
+    # consider from dateutil.parser import parse
+    # save_json(follows)
+    since = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    follows_since = []
+    for follow in follows:
+        follow_timestamp = datetime.fromisoformat(follow.get('value').get('createdAt').replace("Z", "+00:00"))
+        if follow_timestamp > since:
+            # print(follow.get('value').get('subject'))
+            follows_since.append(follow.get('value').get('subject'))
+    return follows_since
+
 
 
 def remove_user_from_list():

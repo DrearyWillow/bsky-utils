@@ -360,6 +360,10 @@ def get_followers(actor):
     params = {'actor': actor, 'limit': 100}
     return generic_page_loop(api, params, ['followers'], ['cursor'])
 
+def get_followers_return(actor):
+    api = f"https://public.api.bsky.app/xrpc/app.bsky.graph.getFollowers"
+    params = {'actor': actor, 'limit': 100}
+    return generic_page_loop_return(api, params, ['followers'], ['cursor'])
 
 def get_profile(did, session=None):
     api = 'https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile'

@@ -373,7 +373,7 @@ def get_profile(did, session=None):
     return safe_request('get', api, headers=headers, params=params)
 
 
-def list_records(did, service, nsid, ):
+def list_records(did, service, nsid, session=None):
     api = f'{service}/xrpc/com.atproto.repo.listRecords'
     params = {
         'repo': did,

@@ -278,7 +278,11 @@ def decompose_url(url):
     return decompose_uri(url2uri(url))
 
 # IDENTITY
-
+def retrieve_handle(did):
+    did_doc = get_did_doc(did)
+    if not did_doc:
+        return None
+    return did_doc.get("alsoKnownAs")[0].replace("at://", "")
 
 def resolve_handle(handle, fatal=False):
     """
@@ -373,16 +377,14 @@ def get_profile(did, session=None):
     return safe_request('get', api, headers=headers, params=params)
 
 
-def list_records(did, service, nsid, session=None):
+def list_records(did, service, nsid):
     api = f'{service}/xrpc/com.atproto.repo.listRecords'
     params = {
         'repo': did,
         'collection': nsid,
         'limit': 100,
     }
-    headers = {"Authorization": "Bearer " +
-               session["accessJwt"]} if session else None
-    return generic_page_loop(api, params, ['records'], ['cursor'])
+    return generic_page_loop_return(api, params, ['records'], ['cursor'])
 
 
 def get_post_thread(url, depth=0, parent_height=0, fatal=False):
@@ -491,14 +493,22 @@ def generate_timestamp(delta=None, hardcode=None, fatal=False):
 
 def add_parent_to_post(post, parent_url):
     pdata = get_post_thread(parent_url)
+
+    if pdata.get('post').get('record').get('reply'):
+        root_cid = pdata.get('post').get('record').get('reply').get('root').get('cid')
+        root_uri = pdata.get('post').get('record').get('reply').get('root').get('uri')
+    else:
+        root_cid = pdata.get('post').get('cid')
+        root_uri = pdata.get('post').get('uri')
+
     post['reply'] = {
         "parent": {
             "cid": pdata.get('post').get('cid'),
             "uri": pdata.get('post').get('uri'),
         },
         "root": {
-            "cid": pdata.get('post').get('record').get('reply').get('root').get('cid'),
-            "uri": pdata.get('post').get('record').get('reply').get('root').get('uri'),
+            "cid": root_cid,
+            "uri": root_uri,
         }
     }
     return post
@@ -547,7 +557,7 @@ def add_facet_to_post(post, link, facet_type, start, end):
 
 def is_link(word):
     if match := re.match(r'^(http(?:s)?://)([^ \n]+)', word):
-        link = urllib.parse.quote(match.group(2))
+        link = urllib.parse.quote(match.group(2), safe=':/?=&')
         return f"{match.group(1)}{link}", "uri", f"{link[:27]}..." if len(link) > 30 else None
     elif match := re.match(r'^#([^ \n]+)', word):
         return urllib.parse.quote(match.group(1)), "tag", None
@@ -631,9 +641,39 @@ def create_post_prompt(username=None, password=None, text=None, parent_url=None,
     alt_text = input(
         "Enter image alt text: ") if blob_path and alt_text is None else ""
 
-    create_post(session, service_endpoint, text,
+    data = create_post(session, service_endpoint, text,
                 parent_url, blob_path, alt_text)
+    return f"Post created successfully: https://bsky.app/profile/{session.get('handle')}/post/{url_basename(data.get('uri'))}"
 
+def create_record(session, service_endpoint, collection, record, rkey=None, validate=None, view_json=None):
+    token = session.get('accessJwt')
+    did = session.get('did')
+    api = f"{service_endpoint}/xrpc/com.atproto.repo.createRecord"
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {token}'
+    }
+    payload = json.dumps({
+        "repo": did,
+        "collection": collection,
+        "record": record
+    })
+    response = safe_request('post', api, headers=headers, data=payload)
+    if view_json:
+        print_json(response)
+    print(f"Record created successfully: https://pdsls.dev/{response.get('uri')}")
+
+def get_record(repo, collection, rkey):
+    # service_endpoint = get_service_endpoint(did)
+    # api = f"{service_endpoint}/xrpc/com.atproto.repo.getRecord"
+    api = "https://public.api.bsky.app/xrpc/com.atproto.repo.getRecord"
+    params = {
+        'repo': repo,
+        'collection': collection,
+        'rkey': rkey
+    }
+    return safe_request('get', api, params=params)
 
 def delete_record(session, service_endpoint, collection, rkey, view_json=True):
     # collection // nsid

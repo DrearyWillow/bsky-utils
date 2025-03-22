@@ -45,6 +45,64 @@ def save_json(obj, path=None, prompt=False, indent=4):
 
 
 def traverse(obj, *paths, default=None, get_all=False):
+    """Traverse a nested dictionary, handling both dictionaries and lists dynamically.
+
+    Args:
+        obj (dict | list): The data to traverse.
+        paths (lists): Lists of keys to try for extracting values.
+        default: Value to return if no valid path is found.
+        get_all (bool): If `False`, return the first matching result. Otherwise, return all matches.
+
+    Returns:
+        The extracted value or a list of values (if get_all=True).
+    """
+    if obj is None:
+        return default
+    
+    results = []
+
+    for path in paths:
+        current = obj
+        stack = [(current, 0)] # (object, path_index)
+
+        while stack:
+            current, index = stack.pop()
+
+            if index >= len(path):  
+                if current is not None:
+                    if get_all:
+                        results.append(current)
+                    else:
+                        return current
+                continue
+
+            key = path[index]
+
+            if isinstance(current, dict):
+                if key in current:
+                    stack.append((current[key], index + 1))
+
+            elif isinstance(current, list):
+                new_items = []
+                
+                if isinstance(key, int):  # respect explicit index if provided
+                    if 0 <= key < len(current):
+                        stack.append((current[key], index + 1))
+                else:  # apply key to all list items
+                    for item in current:
+                        if isinstance(item, dict) and key in item:
+                            new_items.append(item[key])
+                    
+                    if new_items:
+                        for new_item in new_items:
+                            stack.append((new_item, index + 1))
+
+        if not get_all and results:
+            return results[0]
+
+    return results if results else default
+
+def traverse_old(obj, *paths, default=None, get_all=False):
     """Cheap knock-off of yt-dlp's traverse_obj. Each of the provided `paths` is tested and the first producing a valid result will be returned.
         Args:
             obj (dict): The dict to traverse
@@ -54,6 +112,7 @@ def traverse(obj, *paths, default=None, get_all=False):
         Returns:
             The result of the object traversal. If get_all=True, returns a list.
     """
+    if obj is None: return None
     results = []
     for path in paths:
         current = obj

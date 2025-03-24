@@ -43,6 +43,25 @@ def save_json(obj, path=None, prompt=False, indent=4):
 
 # UTILS
 
+def matches_criteria(item, criteria):
+    """Recursively checks if item matches the nested dict criteria"""
+    if not isinstance(item, dict) or not isinstance(criteria, dict):
+        return item == criteria
+    
+    for k, v in criteria.items():
+        if k not in item:
+            return False
+        if isinstance(v, dict):
+            if not matches_criteria(item[k], v):
+                return False
+        elif isinstance(v, list):
+            if item[k] not in v:
+                return False
+        else:
+            if item[k] != v:
+                return False
+    
+    return True
 
 def traverse(obj, *paths, default=None, get_all=False):
     """Traverse a nested dictionary, handling both dictionaries and lists dynamically.
@@ -63,11 +82,12 @@ def traverse(obj, *paths, default=None, get_all=False):
 
     for path in paths:
         current = obj
-        stack = [(current, 0)] # (object, path_index)
+        stack = [(current, 0, None)] # (object, path_index)
 
         while stack:
-            current, index = stack.pop()
-
+            current, index, subindex = stack.pop()
+            # we still have to wait for for all loops on a given index to finish
+            # even if we already have a result and we aren't get_all
             if index >= len(path):  
                 if current is not None:
                     if get_all:
@@ -77,25 +97,52 @@ def traverse(obj, *paths, default=None, get_all=False):
                 continue
 
             key = path[index]
+            if subindex: # current approach will only work one sublist deep
+                key = key[subindex]
+
+            # avoid non-intermediate sublists where possible, see above performance concerns
+            if isinstance(key, list):
+                for subindex, _ in enumerate(key):
+                    stack.append((current, index, subindex))
+                continue
+            
+            # dicts don't traverse current further, they just filter out entries that don't match
+            elif isinstance(key, dict):
+                if isinstance(current, dict) and all(
+                    # only add list items that having key-values that match
+                    # if the value is itself list, treat every entry in that list as a valid value
+                    k in current and (current[k] in v if isinstance(v, list) else current[k] == v)
+                    for k, v in key.items()
+                ):
+                    stack.append((current, index + 1, None))
+                continue
 
             if isinstance(current, dict):
                 if key in current:
-                    stack.append((current[key], index + 1))
+                    stack.append((current[key], index + 1, None))
 
             elif isinstance(current, list):
-                new_items = []
-                
                 if isinstance(key, int):  # respect explicit index if provided
                     if 0 <= key < len(current):
-                        stack.append((current[key], index + 1))
+                        stack.append((current[key], index + 1, None))
+                elif isinstance(key, dict): # search list for object matching dict values
+                    for item in current:
+                        if isinstance(item, dict) and all(
+                            # only add list items that having key-values that match
+                            # if the value is itself list, treat every entry in that list as a valid value
+                            k in item and (item[k] in v if isinstance(v, list) else item[k] == v)
+                            for k, v in key.items()
+                        ):
+                            stack.append((item, index + 1, None))
+                    # for item in current:
+                    #     if isinstance(item, dict) and all(k in item and (item[k] in v if isinstance(v, list) else item[k] == v) for k, v in key.items()):
+                    #         stack.append((item, index + 1, None))
+                        # if isinstance(item, dict) and all(k in item and item[k] == v for k, v in key.items()):
+                        #     stack.append((item, index + 1, None))
                 else:  # apply key to all list items
                     for item in current:
                         if isinstance(item, dict) and key in item:
-                            new_items.append(item[key])
-                    
-                    if new_items:
-                        for new_item in new_items:
-                            stack.append((new_item, index + 1))
+                            stack.append((item[key], index + 1, None))
 
         if not get_all and results:
             return results[0]
@@ -704,6 +751,58 @@ def create_post_prompt(username=None, password=None, text=None, parent_url=None,
                 parent_url, blob_path, alt_text)
     return f"Post created successfully: https://bsky.app/profile/{session.get('handle')}/post/{url_basename(data.get('uri'))}"
 
+def apply_writes_create(session, service_endpoint, records, validate=None, view_json=None):
+    token = session.get('accessJwt')
+    did = session.get('did')
+    api = f"{service_endpoint}/xrpc/com.atproto.repo.applyWrites"
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {token}'
+    }
+    writes = []
+    for record in records:
+        writes.append({
+            "$type": "com.atproto.repo.applyWrites#create",
+            "collection": record['$type'],
+            "value": record,
+        })
+    payload = json.dumps({
+        "repo": did,
+        "writes": writes
+    })
+    response = safe_request('post', api, headers=headers, data=payload)
+    if view_json:
+        print_json(response)
+    return response
+
+def apply_writes(mode, session, service_endpoint, collection, records, validate=None, view_json=None):
+    # untested, and won't work for most functions
+    token = session.get('accessJwt')
+    did = session.get('did')
+    api = f"{service_endpoint}/xrpc/com.atproto.repo.applyWrites"
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {token}'
+    }
+    writes = []
+    for record in records:
+        writes.append({
+            "$type": f"com.atproto.repo.applyWrites#{mode}",
+            "collection": collection,  # could always record['$type'] if i wanted this dynamic
+            "value": record,
+        })
+    payload = json.dumps({
+        "repo": did,
+        "writes": writes
+    })
+    response = safe_request('post', api, headers=headers, data=payload)
+    if view_json:
+        print_json(response)
+    save_json(response)
+    return response
+
 def create_record(session, service_endpoint, collection, record, rkey=None, validate=None, view_json=None):
     token = session.get('accessJwt')
     did = session.get('did')
@@ -721,7 +820,9 @@ def create_record(session, service_endpoint, collection, record, rkey=None, vali
     response = safe_request('post', api, headers=headers, data=payload)
     if view_json:
         print_json(response)
-    print(f"Record created successfully: https://pdsls.dev/{response.get('uri')}")
+    uri = response.get('uri')
+    print(f"Record created successfully: https://pdsls.dev/{uri}")
+    return uri
 
 def get_record(repo, collection, rkey):
     # service_endpoint = get_service_endpoint(did)

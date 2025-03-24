@@ -60,7 +60,6 @@ def matches_criteria(item, criteria):
         else:
             if item[k] != v:
                 return False
-    
     return True
 
 def traverse(obj, *paths, default=None, get_all=False):
@@ -104,45 +103,28 @@ def traverse(obj, *paths, default=None, get_all=False):
             if isinstance(key, list):
                 for subindex, _ in enumerate(key):
                     stack.append((current, index, subindex))
-                continue
             
-            # dicts don't traverse current further, they just filter out entries that don't match
-            elif isinstance(key, dict):
-                if isinstance(current, dict) and all(
-                    # only add list items that having key-values that match
-                    # if the value is itself list, treat every entry in that list as a valid value
-                    k in current and (current[k] in v if isinstance(v, list) else current[k] == v)
-                    for k, v in key.items()
-                ):
-                    stack.append((current, index + 1, None))
-                continue
-
-            if isinstance(current, dict):
-                if key in current:
-                    stack.append((current[key], index + 1, None))
-
             elif isinstance(current, list):
                 if isinstance(key, int):  # respect explicit index if provided
                     if 0 <= key < len(current):
                         stack.append((current[key], index + 1, None))
                 elif isinstance(key, dict): # search list for object matching dict values
                     for item in current:
-                        if isinstance(item, dict) and all(
-                            # only add list items that having key-values that match
-                            # if the value is itself list, treat every entry in that list as a valid value
-                            k in item and (item[k] in v if isinstance(v, list) else item[k] == v)
-                            for k, v in key.items()
-                        ):
+                        if matches_criteria(item, key):
                             stack.append((item, index + 1, None))
-                    # for item in current:
-                    #     if isinstance(item, dict) and all(k in item and (item[k] in v if isinstance(v, list) else item[k] == v) for k, v in key.items()):
-                    #         stack.append((item, index + 1, None))
-                        # if isinstance(item, dict) and all(k in item and item[k] == v for k, v in key.items()):
-                        #     stack.append((item, index + 1, None))
                 else:  # apply key to all list items
                     for item in current:
                         if isinstance(item, dict) and key in item:
                             stack.append((item[key], index + 1, None))
+
+            # dicts don't traverse current further, they just filter out entries that don't match
+            elif isinstance(key, dict):
+                if matches_criteria(current, key):
+                    stack.append((current, index + 1, None))
+
+            elif isinstance(current, dict):
+                if key in current:
+                    stack.append((current[key], index + 1, None))
 
         if not get_all and results:
             return results[0]

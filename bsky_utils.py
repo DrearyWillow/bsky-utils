@@ -41,6 +41,26 @@ def save_json(obj, path=None, prompt=False, indent=4):
     except IOError as e:
         print(f"Failed to write JSON to '{path}': {e}")
 
+def save_car(response, path=None, prompt=False):
+    """Save CAR to disk
+        Args:
+            obj (dict): The response of chunks to save
+            path (str): The full path to the intended save file
+            prompt (bool): If values are missing, prompt the user
+    """
+    if prompt and path == None:
+        path = input("Save CAR file to: ")
+
+    path = validate_path(path, "output", ['car'])
+    path = Path(path)
+    try:
+        with path.open('wb') as file:
+            for chunk in response.iter_content(chunk_size=8192):
+                file.write(chunk)
+        print(f"CAR saved to \033]8;;file://{path}\033\\'{path}'\033]8;;\033\\")
+    except IOError as e:
+        print(f"Failed to write CAR to '{path}': {e}")
+
 # UTILS
 
 def matches_criteria(item, criteria):
@@ -251,7 +271,7 @@ def validate_path(path, fallback_filename, allowed_ext):
     if not directory:
         directory = Path.cwd()
     elif not directory.exists():
-        path.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(parents=True, exist_ok=True)
 
     stem = str(stem) if stem else fallback_filename
 
@@ -421,6 +441,30 @@ def get_service_endpoint(did, fatal=False, third_party=False, fallback=False):
         raise Exception("PDS serviceEndpoint not found in DID document.")
     return 'https://bsky.social'
 
+
+def get_repo(did, service, path=None):
+    """
+    Download a repo and save it to a CAR file.
+    
+    Args:
+        did (str): The DID of the repo
+        path (str): Path to save the resulting .car file.
+    """
+    api = f'{service}/xrpc/com.atproto.sync.getRepo'
+    
+    params = {
+        "did": did
+    }
+    
+    response = requests.get(api, params=params, stream=True)
+    
+    if response.status_code == 200:
+        save_car(response, path=path)
+    else:
+        print(f"Failed to fetch repo: {response.status_code}")
+        print(response.text)
+
+
 # RECORD RETRIEVAL
 
 # TODO: generic_loop_until_match
@@ -576,7 +620,7 @@ def generate_timestamp(delta=None, hardcode=None, fatal=False):
             raise Exception("Invalid delta format")
         else:
             print("Invalid delta format. Returning datetime.now")
-    return time.isoformat().replace("+00:00", "Z")
+    return time.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def add_parent_to_post(post, parent_url):
@@ -758,7 +802,25 @@ def apply_writes_create(session, service_endpoint, records, validate=None, view_
         print_json(response)
     return response
 
-def apply_writes(mode, session, service_endpoint, collection, records, validate=None, view_json=None):
+def apply_writes(session, service_endpoint, writes, validate=None, view_json=None):
+    token = session.get('accessJwt')
+    did = session.get('did')
+    api = f"{service_endpoint}/xrpc/com.atproto.repo.applyWrites"
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {token}'
+    }
+    payload = json.dumps({
+        "repo": did,
+        "writes": writes
+    })
+    response = safe_request('post', api, headers=headers, data=payload)
+    if view_json:
+        print_json(response)
+    return response
+
+def apply_writes_generic(mode, session, service_endpoint, collection, records, validate=None, view_json=None):
     # untested, and won't work for most functions
     token = session.get('accessJwt')
     did = session.get('did')

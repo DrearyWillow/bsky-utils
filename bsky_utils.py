@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import mimetypes
 import urllib.parse
+from dateutil import parser
 
 # JSON
 
@@ -222,10 +223,10 @@ def safe_request(req_type, url, headers=None, params=None, data=None, json=None,
                 return None
         response.raise_for_status()
     except HTTPError:
-        print(f"Request failed. Status code: {response.status_code}. Response: {response.text}")
         if fatal:
+            print(f"Request failed. Status code: {response.status_code}. Response: {response.text}")
             raise
-        print(f"Continuing anyway")
+        # print(f"Continuing anyway")
         return None
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
@@ -565,24 +566,23 @@ def get_follows(did, service_endpoint):
 
 def upload_blob(session, service_endpoint, blob_location):
     # IMAGE_MIMETYPE = "image/png"
-    mime_type = mimetypes.guess_type(blob_location)
+    mime_type, _ = mimetypes.guess_type(blob_location)
     blob_type = mime_type.split('/')[0]
 
     with open(blob_location, "rb") as f:
         blob_bytes = f.read()
 
     if len(blob_bytes) > 1000000:
-        raise Exception(
-            f"{blob_type} file size too large. 1000000 bytes maximum, got: {len(blob_bytes)}")
-    safe_request('post',
-                 f"{service_endpoint}/xrpc/com.atproto.repo.uploadBlob",
-                 headers={
-                     "Content-Type": mime_type,
-                     "Authorization": "Bearer " + session["accessJwt"],
-                 },
-                 data=blob_bytes,
-                 )
-    return response.json()["blob"], blob_type
+        raise Exception(f"{blob_type} file size too large. 1000000 bytes maximum, got: {len(blob_bytes)}")
+    response = safe_request('post',
+        f"{service_endpoint}/xrpc/com.atproto.repo.uploadBlob",
+        headers={
+            "Content-Type": mime_type,
+            "Authorization": "Bearer " + session["accessJwt"],
+        },
+        data=blob_bytes,
+    )
+    return response["blob"], blob_type
 
 # POST
 
@@ -591,6 +591,8 @@ def hardcode_time(*args, **kwargs):
     # call with datetime(year, month, day, hour=0, second=0, microsecond=0, tzinfo=timezone.utc)
     return datetime(*args, **kwargs, tzinfo=timezone.utc)
 
+def convert_timestamp_utc(timestamp):
+    return parser.isoparse(timestamp).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 def generate_timestamp(delta=None, hardcode=None, fatal=False):
     if hardcode is not None:
@@ -856,11 +858,14 @@ def create_record(session, service_endpoint, collection, record, rkey=None, vali
         'Accept': 'application/json',
         'Authorization': f'Bearer {token}'
     }
-    payload = json.dumps({
+    payload = {
         "repo": did,
         "collection": collection,
         "record": record
-    })
+    }
+    if rkey:
+        payload['rkey'] = rkey
+    payload = json.dumps(payload)
     response = safe_request('post', api, headers=headers, data=payload)
     if view_json:
         print_json(response)
@@ -868,16 +873,16 @@ def create_record(session, service_endpoint, collection, record, rkey=None, vali
     print(f"Record created successfully: https://pdsls.dev/{uri}")
     return uri
 
-def get_record(repo, collection, rkey):
+def get_record(repo, collection, rkey, service_endpoint, fatal=True):
     # service_endpoint = get_service_endpoint(did)
-    # api = f"{service_endpoint}/xrpc/com.atproto.repo.getRecord"
-    api = "https://public.api.bsky.app/xrpc/com.atproto.repo.getRecord"
+    api = f"{service_endpoint}/xrpc/com.atproto.repo.getRecord"
+    # api = "https://public.api.bsky.app/xrpc/com.atproto.repo.getRecord"
     params = {
         'repo': repo,
         'collection': collection,
         'rkey': rkey
     }
-    return safe_request('get', api, params=params)
+    return safe_request('get', api, params=params, fatal=fatal)
 
 def delete_record(session, service_endpoint, collection, rkey, view_json=True):
     # collection // nsid

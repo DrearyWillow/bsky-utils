@@ -8,6 +8,7 @@ from pathlib import Path
 import mimetypes
 import urllib.parse
 from dateutil import parser
+from PIL import Image
 
 # JSON
 
@@ -563,16 +564,27 @@ def get_follows(did, service_endpoint):
 
 # BLOB
 
+def strip_exif(input_path, output_path=None):
+    output_path = output_path or input_path
+    with Image.open(input_path) as img:
+        data = list(img.getdata())
+        clean_img = Image.new(img.mode, img.size)
+        clean_img.putdata(data)
+        clean_img.save(output_path)
+    return output_path
+
 
 def upload_blob(session, service_endpoint, blob_location):
     # IMAGE_MIMETYPE = "image/png"
     mime_type, _ = mimetypes.guess_type(blob_location)
     blob_type = mime_type.split('/')[0]
+    if blob_type == "image":
+        blob_location = strip_exif(blob_location)
 
     with open(blob_location, "rb") as f:
         blob_bytes = f.read()
 
-    if len(blob_bytes) > 1000000:
+    if blob_type == "image" and len(blob_bytes) > 1000000:
         raise Exception(f"{blob_type} file size too large. 1000000 bytes maximum, got: {len(blob_bytes)}")
     response = safe_request('post',
         f"{service_endpoint}/xrpc/com.atproto.repo.uploadBlob",
@@ -582,7 +594,7 @@ def upload_blob(session, service_endpoint, blob_location):
         },
         data=blob_bytes,
     )
-    return response["blob"], blob_type
+    return response["blob"] #, blob_type
 
 # POST
 
@@ -648,7 +660,7 @@ def add_parent_to_post(post, parent_url):
     return post
 
 
-def add_blob_to_post(post, service_endpoint, blob_location, alt_text):
+def add_blob_to_post(post, session, service_endpoint, blob_location, alt_text):
     blob, blob_type = upload_blob(session, service_endpoint, blob_location)
     if blob_type not in ["image", "video"]:
         raise Exception(f"Unknown blob type '{blob_type}'")
@@ -666,11 +678,17 @@ def add_blob_to_post(post, service_endpoint, blob_location, alt_text):
         # TODO
         raise Exception("Video not supported yet.")
     elif blob_type == "image":
+        with Image.open(blob_location) as img:
+            width, height = img.size
         post['embed'] = {
             "$type": "app.bsky.embed.images",
             "images": [{
                 "alt": alt_text,
                 "image": blob,
+                "aspectRatio": {
+                    "width": width,
+                    "height": height
+                }
             }],
         }
 
@@ -736,7 +754,7 @@ def create_post(session, service_endpoint, text="", parent_url=None, blob_path=N
         add_parent_to_post(post, parent_url)
 
     if blob_path:
-        add_blob_to_post(post, blob_path, alt_text)
+        add_blob_to_post(post, session, service_endpoint, blob_path, alt_text)
 
     payload = json.dumps({
         "repo": did,

@@ -118,24 +118,28 @@ def traverse(obj, *paths, default=None, get_all=False):
                 continue
 
             key = path[index]
-            if subindex: # current approach will only work one sublist deep
+            if subindex is not None: # current approach will only work one sublist deep
                 key = key[subindex]
 
+            # branching path tuples
+            if isinstance(key, tuple):
+                stack.append((traverse(current, list(key)), index + 1, None))
+
             # avoid non-intermediate sublists where possible, see above performance concerns
-            if isinstance(key, list):
-                for subindex, _ in enumerate(key):
+            elif isinstance(key, list):
+                for subindex in reversed(range(len(key))):
                     stack.append((current, index, subindex))
             
             elif isinstance(current, list):
                 if isinstance(key, int):  # respect explicit index if provided
-                    if 0 <= key < len(current):
+                    if -len(current) <= key < len(current): # allow negative indexes
                         stack.append((current[key], index + 1, None))
                 elif isinstance(key, dict): # search list for object matching dict values
-                    for item in current:
+                    for item in reversed(current): # because we pop the stack, reverse the list to evaluate it in order
                         if matches_criteria(item, key):
                             stack.append((item, index + 1, None))
                 else:  # apply key to all list items
-                    for item in current:
+                    for item in reversed(current): # because we pop the stack, reverse the list to evaluate it in order
                         if isinstance(item, dict) and key in item:
                             stack.append((item[key], index + 1, None))
 
@@ -356,7 +360,7 @@ def decompose_uri(uri):
         raise ValueError(f"AT URI '{uri}' has too many segments.")
     elif len(parts) < 3:
         raise ValueError(f"AT URI '{uri}' does not have enough segments.")
-    return *parts,
+    return (*parts,)
     # uri_parts = uri.replace("at://", "").split("/")
     # repo = uri_parts[0]
     # collection = uri_parts[1]

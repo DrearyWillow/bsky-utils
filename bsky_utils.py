@@ -1,14 +1,17 @@
 
 import json
-import requests
-from requests.exceptions import HTTPError
-import re
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
 import mimetypes
+import os
+import re
 import urllib.parse
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import requests
 from dateutil import parser
+from dotenv import load_dotenv
 from PIL import Image
+from requests.exceptions import HTTPError
 
 # JSON
 
@@ -43,6 +46,7 @@ def save_json(obj, path=None, prompt=False, indent=4):
     except IOError as e:
         print(f"Failed to write JSON to '{path}': {e}")
 
+
 def save_car(response, path=None, prompt=False):
     """Save CAR to disk
         Args:
@@ -65,11 +69,16 @@ def save_car(response, path=None, prompt=False):
 
 # UTILS
 
+
+def split_list(lst, chunk_size):
+    return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
+
+
 def matches_criteria(item, criteria):
     """Recursively checks if item matches the nested dict criteria"""
     if not isinstance(item, dict) or not isinstance(criteria, dict):
         return item == criteria
-    
+
     for k, v in criteria.items():
         if k not in item:
             return False
@@ -83,6 +92,7 @@ def matches_criteria(item, criteria):
             if item[k] != v:
                 return False
     return True
+
 
 def traverse(obj, *paths, default=None, get_all=False):
     """Traverse a nested dictionary, handling both dictionaries and lists dynamically.
@@ -98,18 +108,18 @@ def traverse(obj, *paths, default=None, get_all=False):
     """
     if obj is None:
         return default
-    
+
     results = []
 
     for path in paths:
         current = obj
-        stack = [(current, 0, None)] # (object, path_index)
+        stack = [(current, 0, None)]  # (object, path_index)
 
         while stack:
             current, index, subindex = stack.pop()
             # we still have to wait for for all loops on a given index to finish
             # even if we already have a result and we aren't get_all
-            if index >= len(path):  
+            if index >= len(path):
                 if current is not None:
                     if get_all:
                         results.append(current)
@@ -118,7 +128,7 @@ def traverse(obj, *paths, default=None, get_all=False):
                 continue
 
             key = path[index]
-            if subindex is not None: # current approach will only work one sublist deep
+            if subindex is not None:  # current approach will only work one sublist deep
                 key = key[subindex]
 
             # branching path tuples
@@ -129,17 +139,17 @@ def traverse(obj, *paths, default=None, get_all=False):
             elif isinstance(key, list):
                 for subindex in reversed(range(len(key))):
                     stack.append((current, index, subindex))
-            
+
             elif isinstance(current, list):
                 if isinstance(key, int):  # respect explicit index if provided
-                    if -len(current) <= key < len(current): # allow negative indexes
+                    if -len(current) <= key < len(current):  # allow negative indexes
                         stack.append((current[key], index + 1, None))
-                elif isinstance(key, dict): # search list for object matching dict values
-                    for item in reversed(current): # because we pop the stack, reverse the list to evaluate it in order
+                elif isinstance(key, dict):  # search list for object matching dict values
+                    for item in reversed(current):  # because we pop the stack, reverse the list to evaluate it in order
                         if matches_criteria(item, key):
                             stack.append((item, index + 1, None))
                 else:  # apply key to all list items
-                    for item in reversed(current): # because we pop the stack, reverse the list to evaluate it in order
+                    for item in reversed(current):  # because we pop the stack, reverse the list to evaluate it in order
                         if isinstance(item, dict) and key in item:
                             stack.append((item[key], index + 1, None))
 
@@ -157,6 +167,7 @@ def traverse(obj, *paths, default=None, get_all=False):
 
     return results if results else default
 
+
 def traverse_old(obj, *paths, default=None, get_all=False):
     """Cheap knock-off of yt-dlp's traverse_obj. Each of the provided `paths` is tested and the first producing a valid result will be returned.
         Args:
@@ -167,7 +178,8 @@ def traverse_old(obj, *paths, default=None, get_all=False):
         Returns:
             The result of the object traversal. If get_all=True, returns a list.
     """
-    if obj is None: return None
+    if obj is None:
+        return None
     results = []
     for path in paths:
         current = obj
@@ -300,6 +312,19 @@ def linkify(text, link=None, file=False):
 # AUTH
 
 
+def credentials():
+    """call load_dotenv() first!"""
+    if not (handle := os.getenv("HANDLE")) or not (password := os.getenv("PASSWORD")):
+        raise Exception("Credentials ('HANDLE' and 'PASSWORD') not defined in .env")
+    if not (did := resolve_handle(handle)):
+        raise Exception("Unable to resolve handle.")
+    if not (service := get_service_endpoint(did)):
+        raise Exception("Unable to retrieve service endpoint.")
+    if not (session := get_session(did, password, service)):
+        raise Exception("Invalid credentials.")
+    return handle, did, session, service
+
+
 def get_session(username, password, service_endpoint):
     """Create a session token
         Args:
@@ -392,11 +417,14 @@ def decompose_url(url):
     return decompose_uri(url2uri(url))
 
 # IDENTITY
+
+
 def retrieve_handle(did):
     did_doc = get_did_doc(did)
     if not did_doc:
         return None
     return did_doc.get("alsoKnownAs")[0].replace("at://", "")
+
 
 def resolve_handle(handle, fatal=False):
     """
@@ -451,19 +479,19 @@ def get_service_endpoint(did, fatal=False, third_party=False, fallback=False):
 def get_repo(did, service, path=None):
     """
     Download a repo and save it to a CAR file.
-    
+
     Args:
         did (str): The DID of the repo
         path (str): Path to save the resulting .car file.
     """
     api = f'{service}/xrpc/com.atproto.sync.getRepo'
-    
+
     params = {
         "did": did
     }
-    
+
     response = requests.get(api, params=params, stream=True)
-    
+
     if response.status_code == 200:
         save_car(response, path=path)
     else:
@@ -477,22 +505,22 @@ def get_repo(did, service, path=None):
 # TODO: a way to invoke loop_until_match, yeild_loop, or return_loop for any api - maybe pass function as parameter?
 
 
-def generic_page_loop(api, params, path_to_output, path_to_cursor):
+def generic_page_loop(api, params, path_to_output, path_to_cursor, headers=None):
     res = safe_request('get', api, params=params)
     output = traverse(res, path_to_output)
     yield from output
 
     while cursor := traverse(res, path_to_cursor):
-        res = safe_request('get', api, params={**params, 'cursor': cursor})
+        res = safe_request('get', api, params={**params, 'cursor': cursor}, headers=headers)
         output = traverse(res, path_to_output)
         yield from output
 
 
-def generic_page_loop_return(api, params, path_to_output, path_to_cursor):
-    res = safe_request('get', api, params=params)
+def generic_page_loop_return(api, params, path_to_output, path_to_cursor, headers=None):
+    res = safe_request('get', api, params=params, headers=headers)
     output = traverse(res, path_to_output)
     while cursor := traverse(res, path_to_cursor):
-        res = safe_request('get', api, params={**params, 'cursor': cursor})
+        res = safe_request('get', api, params={**params, 'cursor': cursor}, headers=headers)
         output.extend(traverse(res, path_to_output))
     return output
 
@@ -502,10 +530,12 @@ def get_followers(actor):
     params = {'actor': actor, 'limit': 100}
     return generic_page_loop(api, params, ['followers'], ['cursor'])
 
+
 def get_followers_return(actor):
     api = f"https://public.api.bsky.app/xrpc/app.bsky.graph.getFollowers"
     params = {'actor': actor, 'limit': 100}
     return generic_page_loop_return(api, params, ['followers'], ['cursor'])
+
 
 def get_profile(did, session=None):
     api = 'https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile'
@@ -568,6 +598,7 @@ def get_follows(did, service_endpoint):
 
 # BLOB
 
+
 def strip_exif(input_path, output_path=None):
     output_path = output_path or input_path
     with Image.open(input_path) as img:
@@ -591,14 +622,14 @@ def upload_blob(session, service_endpoint, blob_location):
     if blob_type == "image" and len(blob_bytes) > 1000000:
         raise Exception(f"{blob_type} file size too large. 1000000 bytes maximum, got: {len(blob_bytes)}")
     response = safe_request('post',
-        f"{service_endpoint}/xrpc/com.atproto.repo.uploadBlob",
-        headers={
-            "Content-Type": mime_type,
-            "Authorization": "Bearer " + session["accessJwt"],
-        },
-        data=blob_bytes,
-    )
-    return response["blob"] #, blob_type
+                            f"{service_endpoint}/xrpc/com.atproto.repo.uploadBlob",
+                            headers={
+                                "Content-Type": mime_type,
+                                "Authorization": "Bearer " + session["accessJwt"],
+                            },
+                            data=blob_bytes,
+                            )
+    return response["blob"]  # , blob_type
 
 # POST
 
@@ -607,8 +638,10 @@ def hardcode_time(*args, **kwargs):
     # call with datetime(year, month, day, hour=0, second=0, microsecond=0, tzinfo=timezone.utc)
     return datetime(*args, **kwargs, tzinfo=timezone.utc)
 
+
 def convert_timestamp_utc(timestamp):
     return parser.isoparse(timestamp).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 def generate_timestamp(delta=None, hardcode=None, fatal=False):
     if hardcode is not None:
@@ -798,8 +831,9 @@ def create_post_prompt(username=None, password=None, text=None, parent_url=None,
         "Enter image alt text: ") if blob_path and alt_text is None else ""
 
     data = create_post(session, service_endpoint, text,
-                parent_url, blob_path, alt_text)
+                       parent_url, blob_path, alt_text)
     return f"Post created successfully: https://bsky.app/profile/{session.get('handle')}/post/{url_basename(data.get('uri'))}"
+
 
 def apply_writes_create(session, service_endpoint, records, validate=None, view_json=None):
     token = session.get('accessJwt')
@@ -826,6 +860,7 @@ def apply_writes_create(session, service_endpoint, records, validate=None, view_
         print_json(response)
     return response
 
+
 def apply_writes(session, service_endpoint, writes, validate=None, view_json=None):
     token = session.get('accessJwt')
     did = session.get('did')
@@ -844,34 +879,45 @@ def apply_writes(session, service_endpoint, writes, validate=None, view_json=Non
         print_json(response)
     return response
 
-def apply_writes_generic(mode, session, service_endpoint, collection, records, validate=None, view_json=None):
-    # untested, and won't work for most functions
-    token = session.get('accessJwt')
-    did = session.get('did')
-    api = f"{service_endpoint}/xrpc/com.atproto.repo.applyWrites"
-    headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Authorization': f'Bearer {token}'
-    }
-    writes = []
-    for record in records:
-        writes.append({
-            "$type": f"com.atproto.repo.applyWrites#{mode}",
-            "collection": collection,  # could always record['$type'] if i wanted this dynamic
-            "value": record,
-        })
-    payload = json.dumps({
-        "repo": did,
-        "writes": writes
-    })
-    response = safe_request('post', api, headers=headers, data=payload)
-    if view_json:
-        print_json(response)
-    save_json(response)
-    return response
 
-def create_record(session, service_endpoint, collection, record, rkey=None, validate=None, view_json=None):
+def apply_writes_batch(session, service, records):
+    if len(records) == 0:
+        return
+
+    writes = []
+    for i, record in enumerate(records, 1):
+        writes.append(
+            # if the record is an applyWrites record, use it directly
+            # this allows for non-creation writes
+            record if record['$type'].split('#')[0] == 'com.atproto.repo.applyWrites' else {
+                "$type": "com.atproto.repo.applyWrites#create",
+                "collection": record['$type'],
+                "value": record,
+            }
+        )
+        if (i % 200 == 0) or (i == len(records)):
+            apply_writes(session, service, writes)
+            writes = []
+
+    # writes = [
+    #     record if record['$type'].split('#')[0] == 'com.atproto.repo.applyWrites' else {
+    #         "$type": "com.atproto.repo.applyWrites#create",
+    #         "collection": record['$type'],
+    #         "value": record,
+    #     }
+    #     for record in records
+    # ]
+    # for batch in [writes[i:i + 200] for i in range(0, len(writes), 200)]:
+    #     apply_writes(session, service, batch)
+
+    # split_batches = split_list(writes, 200)
+    # total_batches = len(split_batches)
+    # for i, batch in enumerate(split_batches):
+    #     response = apply_writes(session, service, batch)
+    #     print(f"{i+1}/{total_batches} applyWrites complete")
+
+
+def create_record(session, service_endpoint, record, nsid=None, rkey=None, validate=None, view_json=None):
     token = session.get('accessJwt')
     did = session.get('did')
     api = f"{service_endpoint}/xrpc/com.atproto.repo.createRecord"
@@ -882,7 +928,7 @@ def create_record(session, service_endpoint, collection, record, rkey=None, vali
     }
     payload = {
         "repo": did,
-        "collection": collection,
+        "collection": nsid or record['$type'],
         "record": record
     }
     if rkey:
@@ -895,6 +941,7 @@ def create_record(session, service_endpoint, collection, record, rkey=None, vali
     print(f"Record created successfully: https://pdsls.dev/{uri}")
     return uri
 
+
 def get_record(repo, collection, rkey, service_endpoint, fatal=True):
     # service_endpoint = get_service_endpoint(did)
     api = f"{service_endpoint}/xrpc/com.atproto.repo.getRecord"
@@ -905,6 +952,7 @@ def get_record(repo, collection, rkey, service_endpoint, fatal=True):
         'rkey': rkey
     }
     return safe_request('get', api, params=params, fatal=fatal)
+
 
 def delete_record(session, service_endpoint, collection, rkey, view_json=True):
     # collection // nsid
@@ -997,17 +1045,61 @@ def replace_post_prompt(username=None, password=None, url=None, text=None):
 
     replace_post(session, service_endpoint, url, text)
 
+
+def search_posts(q, session, service, sort=None, since=None, until=None, mentions=None,
+                 author=None, lang=None, domain=None, url=None, tag=None, limit=100):
+    token = session.get('accessJwt')
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {token}'
+    }
+    url = f"{service}/xrpc/app.bsky.feed.searchPosts"
+    params = {
+        "q": q,
+        "sort": sort,
+        "since": since,
+        "until": until,
+        "mentions": mentions,
+        "author": author,
+        "lang": lang,
+        "domain": domain,
+        "url": url,
+        "tag": tag,
+        "limit": limit
+    }
+    return generic_page_loop_return(url, params, ['posts'], ['cursor'], headers=headers)
+
+
+def search_posts_from_me(q, session, service):
+    token = session.get('accessJwt')
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {token}'
+    }
+    url = f"{service}/xrpc/app.bsky.feed.searchPosts"
+    params = {
+        "q": q,
+        "sort": "latest",
+        "author": session['did'],
+        "limit": 100
+    }
+    return generic_page_loop_return(url, params, ['posts'], ['cursor'], headers=headers)
+
+
 # LISTS
+
 
 def get_list_items(list_uri, limit=100):
     params = {
         'list': list_uri,
         'limit': limit,
     }
-    #TODO: endpoint? i don't think it adds anything
+    # TODO: endpoint? i don't think it adds anything
     api = 'https://public.api.bsky.app/xrpc/app.bsky.graph.getList'
     return list(generic_page_loop(api, params, ['items'], ['cursor']))
-    
+
 
 def get_list(list_uri):
     params = {
@@ -1017,6 +1109,7 @@ def get_list(list_uri):
     api = 'https://public.api.bsky.app/xrpc/app.bsky.graph.getList'
     return safe_request('get', api, params=params)
     # return list(generic_page_loop(api, params, ['items'], ['cursor']))
+
 
 def get_lists(actor, limit=50, cursor=None):
     """
@@ -1257,6 +1350,7 @@ def add_follows_to_list(session, timestamp=True):
 ## UNFINISHED ##
 ## ========== ##
 
+
 def get_follows_since(did, service_endpoint, timestamp):
     follows = get_follows(did, service_endpoint)
     # consider from dateutil.parser import parse
@@ -1269,7 +1363,6 @@ def get_follows_since(did, service_endpoint, timestamp):
             # print(follow.get('value').get('subject'))
             follows_since.append(follow.get('value').get('subject'))
     return follows_since
-
 
 
 def remove_user_from_list():

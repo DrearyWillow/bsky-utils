@@ -3,6 +3,7 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -47,7 +48,7 @@ def save_json(obj, path=None, prompt=False, indent=4):
         print(f"Failed to write JSON to '{path}': {e}")
 
 
-def save_car(response, path=None, prompt=False):
+def save_car(did, service, path=None, prompt=False):
     """Save CAR to disk
         Args:
             obj (dict): The response of chunks to save
@@ -56,16 +57,46 @@ def save_car(response, path=None, prompt=False):
     """
     if prompt and path == None:
         path = input("Save CAR file to: ")
+    path = validate_path(path, f"repo-{did}-{generate_timestamp()}", ['car'])
 
-    path = validate_path(path, "output", ['car'])
+    repo = get_repo(did, service, path)
+
     path = Path(path)
     try:
         with path.open('wb') as file:
-            for chunk in response.iter_content(chunk_size=8192):
+            for chunk in repo.iter_content(chunk_size=8192):
                 file.write(chunk)
         print(f"CAR saved to \033]8;;file://{path}\033\\'{path}'\033]8;;\033\\")
+        return (str(path))
     except IOError as e:
         print(f"Failed to write CAR to '{path}': {e}")
+
+
+def save_car_and_tar(actor, directory=None):
+    """Returns: car_path, tar_path"""
+    did = resolve_handle(actor)
+    service = get_service_endpoint(did)
+    filename = f"repo-{actor}-{generate_timestamp()}.car"
+    car_path = str(Path(directory) / filename) if directory else filename
+    car_path = validate_path(car_path, filename, ['car'])
+    # car_path = replace_filename_chars(f"repo-{actor}-{generate_timestamp()}.car")
+    print(f"Attempting getRepo for {actor}")
+    car_path = save_car(did, service, car_path)
+    print(f"Unpacking CAR file for {actor}")
+    tar_path = car_to_tar(car_path)
+    return car_path, tar_path
+
+def car_to_tar(car_path, tar_path=None):
+    tar_path = tar_path or (f"{car_path[:-4]}.tar" if car_path.endswith('.car') else f"{car_path}.tar")
+    # tar_path = replace_filename_chars(tar_path)
+    # tar_path = validate_path(tar_path or f"{car_path[:-4]}.tar", car_path, ['tar'])
+    tar_path = validate_path(tar_path, car_path, ['tar'])
+    try:
+        subprocess.run(["car2tar", car_path, tar_path], check=True)
+        return tar_path
+    except subprocess.CalledProcessError as e:
+        raise Exception("CAR unpack failed:", e)
+    
 
 # UTILS
 
@@ -210,7 +241,7 @@ def traverse_old(obj, *paths, default=None, get_all=False):
     return results if results else default
 
 
-def safe_request(req_type, url, headers=None, params=None, data=None, json=None, fatal=True):
+def safe_request(req_type, url, headers=None, params=None, data=None, json=None, fatal=True, stream=False):
     """Make a request with error handling, and return JSON
         Args:
             req_type (str): The type of request. GET or POST.
@@ -229,7 +260,7 @@ def safe_request(req_type, url, headers=None, params=None, data=None, json=None,
     # TODO: REMINDER THAT BOOLS ARE NOT BOOLS: True = "true"
     try:
         if req_type.upper() == 'GET':
-            response = requests.get(url, headers=headers, params=params)
+            response = requests.get(url, headers=headers, params=params, stream=stream)
         elif req_type.upper() == 'POST':
             response = requests.post(
                 url, headers=headers, data=data, json=json)
@@ -251,6 +282,8 @@ def safe_request(req_type, url, headers=None, params=None, data=None, json=None,
             raise
         print(f"Continuing anyway")
         return None
+    if stream:
+        return response
     return response.json()
 
 
@@ -265,6 +298,10 @@ def url_basename(url):
     return path.strip('/').split('/')[-1]
 
 
+def replace_filename_chars(name):
+    return re.sub(r'[<>:"/\\|?*\x00-\x1F]', '_', name)
+
+
 def validate_path(path, fallback_filename, allowed_ext):
     """Ensure a passed path can be written to. Makes parent directories if needed.
         If no directory can be found, use the current working directory.
@@ -275,6 +312,7 @@ def validate_path(path, fallback_filename, allowed_ext):
         Returns:
             path (str): the corrected path
     """
+    fallback_filename = replace_filename_chars(fallback_filename)
     if not path:
         return f"{Path.cwd()}/{fallback_filename}.{allowed_ext[0]}"
 
@@ -291,7 +329,7 @@ def validate_path(path, fallback_filename, allowed_ext):
     elif not directory.exists():
         directory.mkdir(parents=True, exist_ok=True)
 
-    stem = str(stem) if stem else fallback_filename
+    stem = replace_filename_chars(str(stem)) if stem else fallback_filename
 
     if suffix:
         suffix = str(suffix)
@@ -313,7 +351,8 @@ def linkify(text, link=None, file=False):
 
 
 def credentials():
-    """call load_dotenv() first!"""
+    """call load_dotenv() first!
+        Returns: handle, did, session, service"""
     if not (handle := os.getenv("HANDLE")) or not (password := os.getenv("PASSWORD")):
         raise Exception("Credentials ('HANDLE' and 'PASSWORD') not defined in .env")
     if not (did := resolve_handle(handle)):
@@ -450,7 +489,7 @@ def resolve_handle(handle, fatal=False):
 
 def get_did_doc(did, fatal=False, third_party=False, fallback=False):
     if not did.startswith('did:'):
-        did = retrieve_did(did)
+        did = resolve_handle(did)
 
     def retrieve(third_party):
         if third_party:
@@ -493,10 +532,12 @@ def get_repo(did, service, path=None):
     response = requests.get(api, params=params, stream=True)
 
     if response.status_code == 200:
-        save_car(response, path=path)
+        # save_car(response, path=path)
+        return response
     else:
         print(f"Failed to fetch repo: {response.status_code}")
         print(response.text)
+        return None
 
 
 # RECORD RETRIEVAL
@@ -608,6 +649,8 @@ def strip_exif(input_path, output_path=None):
         clean_img.save(output_path)
     return output_path
 
+class BlobTooLargeError(Exception):
+    pass
 
 def upload_blob(session, service_endpoint, blob_location):
     # IMAGE_MIMETYPE = "image/png"
@@ -620,16 +663,38 @@ def upload_blob(session, service_endpoint, blob_location):
         blob_bytes = f.read()
 
     if blob_type == "image" and len(blob_bytes) > 1000000:
-        raise Exception(f"{blob_type} file size too large. 1000000 bytes maximum, got: {len(blob_bytes)}")
-    response = safe_request('post',
-                            f"{service_endpoint}/xrpc/com.atproto.repo.uploadBlob",
-                            headers={
-                                "Content-Type": mime_type,
-                                "Authorization": "Bearer " + session["accessJwt"],
-                            },
-                            data=blob_bytes,
-                            )
+        raise BlobTooLargeError(f"{blob_type} file size too large. 1000000 bytes maximum, got: {len(blob_bytes)}")
+    response = safe_request(
+        'post',
+        f"{service_endpoint}/xrpc/com.atproto.repo.uploadBlob",
+        headers={
+            "Content-Type": mime_type,
+            "Authorization": "Bearer " + session["accessJwt"],
+        },
+        data=blob_bytes,
+    )
     return response["blob"]  # , blob_type
+
+def get_blob(service, did, cid):
+    api = f'{service}/xrpc/com.atproto.sync.getBlob'
+    params = {'did': did, 'cid': cid}
+    return safe_request('get', api, params=params, stream=True)
+
+def save_blob(path, service, did, cid, ext, prompt=False):
+    if prompt and path == None:
+        path = input("Save blob to: ")
+    if isinstance(ext, str):
+        ext = [ext]
+    path = validate_path(path, f"{did}/{cid}", ext)
+    
+    response = get_blob(service, did, cid)
+
+    with open(path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+
+    return path
 
 # POST
 
@@ -835,6 +900,17 @@ def create_post_prompt(username=None, password=None, text=None, parent_url=None,
     return f"Post created successfully: https://bsky.app/profile/{session.get('handle')}/post/{url_basename(data.get('uri'))}"
 
 
+def zip_apply_writes(writes_response, records):
+    return [
+        {
+            'cid': write['cid'],
+            'uri': write['uri'],
+            'record': record
+        }
+        for write, record in zip(writes_response['results'], records)
+    ]
+
+
 def apply_writes_create(session, service_endpoint, records, validate=None, view_json=None):
     token = session.get('accessJwt')
     did = session.get('did')
@@ -858,7 +934,7 @@ def apply_writes_create(session, service_endpoint, records, validate=None, view_
     response = safe_request('post', api, headers=headers, data=payload)
     if view_json:
         print_json(response)
-    return response
+    return zip_apply_writes(response, records)
 
 
 def apply_writes(session, service_endpoint, writes, validate=None, view_json=None):
@@ -877,14 +953,13 @@ def apply_writes(session, service_endpoint, writes, validate=None, view_json=Non
     response = safe_request('post', api, headers=headers, data=payload)
     if view_json:
         print_json(response)
-    return response
-
+    return zip_apply_writes(response, writes)
 
 def apply_writes_batch(session, service, records):
     if len(records) == 0:
         return
 
-    writes = []
+    writes, written = [], []
     for i, record in enumerate(records, 1):
         writes.append(
             # if the record is an applyWrites record, use it directly
@@ -896,8 +971,10 @@ def apply_writes_batch(session, service, records):
             }
         )
         if (i % 200 == 0) or (i == len(records)):
-            apply_writes(session, service, writes)
+            written.append(apply_writes(session, service, writes))
             writes = []
+    
+    return written
 
     # writes = [
     #     record if record['$type'].split('#')[0] == 'com.atproto.repo.applyWrites' else {
@@ -917,7 +994,7 @@ def apply_writes_batch(session, service, records):
     #     print(f"{i+1}/{total_batches} applyWrites complete")
 
 
-def create_record(session, service_endpoint, record, nsid=None, rkey=None, validate=None, view_json=None):
+def create_record(session, service_endpoint, record, return_res=False, nsid=None, rkey=None, validate=None, view_json=None):
     token = session.get('accessJwt')
     did = session.get('did')
     api = f"{service_endpoint}/xrpc/com.atproto.repo.createRecord"
@@ -939,6 +1016,8 @@ def create_record(session, service_endpoint, record, nsid=None, rkey=None, valid
         print_json(response)
     uri = response.get('uri')
     print(f"Record created successfully: https://pdsls.dev/{uri}")
+    if return_res:
+        return response
     return uri
 
 
@@ -1111,7 +1190,7 @@ def get_list(list_uri):
     # return list(generic_page_loop(api, params, ['items'], ['cursor']))
 
 
-def get_lists(actor, limit=50, cursor=None):
+def get_lists(service, actor, limit=100, cursor=None):
     """
         Enumerate the lists created by a specified account.
         Args:
@@ -1130,7 +1209,7 @@ def get_lists(actor, limit=50, cursor=None):
         'cursor': cursor,
     }
     return safe_request(
-        'get', 'https://public.api.bsky.app/xrpc/app.bsky.graph.getLists', params=params)
+        'get', f'{service}/xrpc/app.bsky.graph.getLists', params=params)
 
 
 def get_list_record(session, service_endpoint, selected_list):
